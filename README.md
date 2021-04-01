@@ -1,3 +1,251 @@
+# OLLVM 12.x
+
+从 obfuscator-llvm 项目移植到 llvm 12.x
+
+## 使用方法
+
+OLLVM Build on Windows 10 + Visual Studio 2019 修复方式参考:
+
+[OLLVM Build on Windows 10 + Visual Studio 2019](https://holycall.tistory.com/364)
+
+获取 llvm 12 [https://github.com/llvm/llvm-project](https://github.com/llvm/llvm-project)
+
+获取 ollvm 10 该项目是由PLCT实验室维护的ollvm分支 [https://github.com/isrc-cas/flounder](https://github.com/isrc-cas/flounder)
+
+复制 ollvm 主要代码到 llvm 12 项目中.
+
+```
+copy /r C:\Dev\ollvm\reference\flounder\llvm\include\llvm\Transforms\Obfuscation C:\Dev\ollvm\llvm-project\llvm\include\llvm\Transforms
+copy /r C:\Dev\ollvm\reference\flounder\llvm\lib\Transforms\Obfuscation C:\Dev\ollvm\llvm-project\llvm\lib\Transforms
+```
+
+### 修改 CmakeLists.txt
+
+添加下面这行到 llvm-project\llvm\lib\Transforms\CMakeLists.txt 的第13行.
+
+```c
+add_subdirectory(Obfuscation)
+```
+
+llvm-project\llvm\lib\Transforms\IPO\CMakeLists.txt
+
+Add the following line at line 73
+
+```c
+Obfuscation
+```
+
+### 修改源码部分
+
+**PassManagerBuilder.cpp**
+
+llvm-project\llvm\lib\Transforms\IPO\PassManagerBuilder.cpp
+
+Add the following at line 51
+
+```c
+#include "llvm/Transforms/Obfuscation/BogusControlFlow.h"
+#include "llvm/Transforms/Obfuscation/Flattening.h"
+#include "llvm/Transforms/Obfuscation/Split.h"
+#include "llvm/Transforms/Obfuscation/Substitution.h"
+#include "llvm/Transforms/Obfuscation/CryptoUtils.h"
+#include "llvm/Transforms/Obfuscation/StringObfuscation.h"
+```
+
+Add the following at line 93
+
+```c
+// Flags for obfuscation
+static cl::opt<std::string> Seed("seed", cl::init(""),
+                                    cl::desc("seed for the random"));
+static cl::opt<std::string> AesSeed("aesSeed", cl::init(""),
+                                    cl::desc("seed for the AES-CTR PRNG"));
+static cl::opt<bool> StringObf("sobf", cl::init(false),
+                                  cl::desc("Enable the string obfuscation"));   //tofix
+static cl::opt<bool> Flattening("fla", cl::init(false),              //tofix
+                                cl::desc("Enable the flattening pass"));
+static cl::opt<bool> BogusControlFlow("bcf", cl::init(false),
+                                      cl::desc("Enable bogus control flow"));
+static cl::opt<bool> Substitution("sub", cl::init(false),
+                                  cl::desc("Enable instruction substitutions"));
+static cl::opt<bool> Split("split", cl::init(false),
+                           cl::desc("Enable basic block splitting"));
+// Flags for obfuscation
+```
+
+Add the following at line 567
+
+```c
+  //obfuscation related pass
+  MPM.add(createSplitBasicBlockPass(Split));
+  MPM.add(createBogusPass(BogusControlFlow));
+  MPM.add(createFlatteningPass(Flattening));
+  MPM.add(createStringObfuscationPass(StringObf));
+  MPM.add(createSubstitutionPass(Substitution));
+```
+
+**StringObfuscation.cpp**
+
+llvm-project\llvm\lib\Transforms\Obfuscation\StringObfuscation.cpp
+
+Modify CallSite.h to AbstractCallSite.h. at line 10
+
+```c
+#include "llvm/IR/AbstractCallSite.h"
+```
+
+Insert the follwing at line 15
+
+```c
+#include "llvm/IR/Instructions.h"
+```
+
+Replace MayAlign to Align at line 15, 175, 183, 184, 191.
+
+```c
+LoadInst *ptr_19 = new LoadInst(gvar->getType()->getArrayElementType(),
+                                gvar, "", false, label_for_body);
+ptr_19->setAlignment(Align(8));
+...
+LoadInst* int8_20 = new LoadInst(ptr_arrayidx->getType()->getArrayElementType(), ptr_arrayidx, "", false, label_for_body);
+int8_20->setAlignment(Align(1));
+...
+void_21->setAlignment(Align(1));
+```
+
+**Substitution.cpp**
+
+Modify Substitution::addDoubleNeg function at line 215. BinaryOperator → UnaryOperator
+
+```c
+// Implementation of a = -(-b + (-c)) 
+void Substitution::addDoubleNeg(BinaryOperator *bo) { 
+  BinaryOperator *op, *op2 = NULL; 
+  UnaryOperator *op3, *op4; 
+  if (bo->getOpcode() == Instruction::Add) { 
+    op = BinaryOperator::CreateNeg(bo->getOperand(0), "", bo); 
+    op2 = BinaryOperator::CreateNeg(bo->getOperand(1), "", bo); 
+    op = BinaryOperator::Create(Instruction::Add, op, op2, "", bo); 
+    op = BinaryOperator::CreateNeg(op, "", bo); 
+    bo->replaceAllUsesWith(op); 
+    // Check signed wrap 
+    //op->setHasNoSignedWrap(bo->hasNoSignedWrap()); 
+    //op->setHasNoUnsignedWrap(bo->hasNoUnsignedWrap()); 
+  } else { 
+    op3 = UnaryOperator::CreateFNeg(bo->getOperand(0), "", bo); 
+    op4 = UnaryOperator::CreateFNeg(bo->getOperand(1), "", bo); 
+    op = BinaryOperator::Create(Instruction::FAdd, op3, op4, "", bo); 
+    op3 = UnaryOperator::CreateFNeg(op, "", bo); 
+    bo->replaceAllUsesWith(op3); 
+  }   
+}
+```
+
+Modify Substitution::subNeg function at line 299. BinaryOperator → UnaryOperator
+
+```c
+// Implementation of a = b + (-c) 
+void Substitution::subNeg(BinaryOperator *bo) { 
+  BinaryOperator *op = NULL;   
+  if (bo->getOpcode() == Instruction::Sub) { 
+    op = BinaryOperator::CreateNeg(bo->getOperand(1), "", bo); 
+    op = BinaryOperator::Create(Instruction::Add, bo->getOperand(0), op, "", bo); 
+    // Check signed wrap 
+    //op->setHasNoSignedWrap(bo->hasNoSignedWrap()); 
+    //op->setHasNoUnsignedWrap(bo->hasNoUnsignedWrap()); 
+  } else { 
+    auto op1 = UnaryOperator::CreateFNeg(bo->getOperand(1), "", bo); 
+    op = BinaryOperator::Create(Instruction::FAdd, bo->getOperand(0), op1, "", bo); 
+  } 
+  bo->replaceAllUsesWith(op); 
+}
+```
+
+**BogusControlFlow.cpp**
+
+C:\Dev\ollvm\llvm-project\llvm\lib\Transforms\Obfuscation\BogusControlFlow.cpp 
+
+Add the following at line 380
+ 
+```c
+UnaryOperator *op2;
+```
+
+Modify at line 420
+
+```c
+case 1: op2 = UnaryOperator::CreateFNeg(i->getOperand(0),*var,&*i);
+case 1: op2 = UnaryOperator::CreateFNeg(i->getOperand(0),*var,&*i);
+```
+
+Modify at line 569-570
+
+```c
+opX = new LoadInst (x->getType()->getElementType(), (Value *)x, "", (*i));
+opY = new LoadInst (x->getType()->getElementType(), (Value *)y, "", (*i));
+```
+
+The constructor LoadInst in LLVM 12 requires a llvm::Type object as the first argument.
+
+**InitializePasses.h**
+
+C:\Dev\ollvm\llvm-project\llvm\include\llvm\InitializePasses.h 
+
+Add the following at 453
+
+```c
+void initializeFlatteningPass(PassRegistry&);
+```
+
+**Flattening.cpp**
+
+C:\Dev\ollvm\llvm-project\llvm\lib\Transforms\Obfuscation\Flattening.cpp
+
+Add the following at line 17
+
+```c
+#include "llvm/InitializePasses.h"
+```
+
+Modify line 123. 
+ 
+```c
+load = new LoadInst(switchVar->getType()->getElementType(), switchVar, "switchVar", loopEntry);
+```
+
+line 239.
+
+```c
+INITIALIZE_PASS_DEPENDENCY(LowerSwitchLegacyPass)
+```
+
+cmake
+
+```c
+cd llvm-project
+mkdir build
+cd build
+cmake -DLLVM_ENABLE_PROJECTS="clang;libcxx" -G "Visual Studio 16 2019" -A x64 -Thost=x64 ..\llvm
+```
+
+Build
+
+打开 LLVM.sln 项目进行编译.
+
+ollvm 基本使用
+
+编译时使用参数
+
+```c
+clang-cl -mllvm bcf -mllvm sub -mllvm -fla -mllvm -sobf -mllvm -split 
+```
+
+增加混淆强度
+
+```c
+clang-cl -mllvm -bcf -mllvm -bcf_loop=4 -mllvm -bcf_prob=100 -mllvm -sub -mllvm -sub_loop=2 -mllvm -fla -mllvm -sobf -mllvm -split 
+```
+
 # The LLVM Compiler Infrastructure
 
 This directory and its sub-directories contain source code for LLVM,
