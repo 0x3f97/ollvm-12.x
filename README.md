@@ -237,7 +237,7 @@ ollvm 基本使用
 编译时使用参数
 
 ```c
-clang-cl -mllvm bcf -mllvm sub -mllvm -fla -mllvm -sobf -mllvm -split 
+clang-cl -mllvm -bcf -mllvm -sub -mllvm -fla -mllvm -sobf -mllvm -split 
 ```
 
 增加混淆强度
