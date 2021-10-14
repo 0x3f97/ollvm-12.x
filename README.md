@@ -175,7 +175,6 @@ Modify at line 420
 
 ```c
 case 1: op2 = UnaryOperator::CreateFNeg(i->getOperand(0),*var,&*i);
-case 1: op2 = UnaryOperator::CreateFNeg(i->getOperand(0),*var,&*i);
 ```
 
 Modify at line 569-570
